@@ -40,13 +40,11 @@ namespace Multi_BOS_Server.Trade
         public double SLMax { get; set; }
         public decimal BoxUpPrice { get; set; }
         public decimal BoxDownPrice { get; set; }
-        public double HistoricalTransactionProfit { get; set; }
 
         public Breakout()
         {
             AccountGroups = new();
             Transactions = new();
-            HistoricalTransactionProfit = 0;
         }
 
         public override string ToString()

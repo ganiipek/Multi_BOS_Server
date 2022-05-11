@@ -52,6 +52,34 @@ namespace Multi_BOS_Server.Trade
             new Thread(new ThreadStart(orderSocketManager.Start)).Start();
         }
 
+        static void Controller()
+        {
+            while (true)
+            {
+                foreach(Breakout breakout in breakouts)
+                {
+                    if(breakout.Transactions.All(_transaction => _transaction.ClosedInfo))
+                    {
+                        double profit = breakout.Transactions.SelectMany(_transaction => _transaction.Orders).Sum(_order => _order.Profit + _order.Swap + _order.Commission);
+
+                        string request = String.Format("\"router\":\"{0}\",\"close_all\":\"{1}\",\"profit\":\"{2}\"",
+                            "close_breakout",
+                            true,
+                            profit.ToString().Replace(',','.')
+                            );
+
+                        BreakoutManager.tradeSocketManager.Send(breakout.AccountPairClient.Client, request);
+                    }
+                }
+
+                Thread.Sleep(1000);
+            }
+        }
+        public static void ControllerStart()
+        {
+            new Thread(new ThreadStart(Controller)).Start();
+        }
+
         public static Breakout? Get(int id)
         {
             lock (breakouts)
@@ -78,7 +106,7 @@ namespace Multi_BOS_Server.Trade
                     string debug = String.Format("New breakout added in breakouts: {0}",
                         breakout.ToString()
                     );
-                    Utils.SendLog(LoggerService.LoggerType.SUCCESS, debug);
+                    Utils.SendLog(LoggerService.LoggerType.DEBUG, debug);
                 }
             }
         }
@@ -94,7 +122,7 @@ namespace Multi_BOS_Server.Trade
                     string debug = String.Format("The breakout removed from breakouts: {0}",
                         breakout.ToString()
                     );
-                    Utils.SendLog(LoggerService.LoggerType.SUCCESS, debug);
+                    Utils.SendLog(LoggerService.LoggerType.DEBUG, debug);
                 }
             }
         }
@@ -158,6 +186,87 @@ namespace Multi_BOS_Server.Trade
                     breakout.AccountGroups.Find(_accountGroup => _accountGroup.Master == true).VolumeMin.ToString().Replace(',','.')
                     );
                 tradeSocketManager.Send(client, request);
+            }
+        }
+
+        public static void Close(TcpClient client, dynamic json_data)
+        {
+            int breakoutId = (int)json_data.breakout_id;
+
+            Breakout? breakout = Get(breakoutId);
+            if (breakout == null)
+            {
+                string debug = String.Format("BreakoutManager (Close) --> The breakout is not found! BreakoutId: {0}",
+                        breakoutId.ToString()
+                    );
+                Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
+            }
+            else
+            {
+                List<Transaction> transactions = breakout.Transactions.FindAll(_transaction => _transaction.ClosedInfo == false);
+
+                if(transactions.Count == 0)
+                {
+                    double profit = breakout.Transactions.SelectMany(_transaction => _transaction.Orders).Sum(_order => _order.Profit + _order.Swap + _order.Commission);
+
+                    string request = String.Format("\"router\":\"{0}\",\"close_all\":\"{1}\",\"profit\":\"{2}\"",
+                        "close_breakout",
+                        true,
+                        profit.ToString().Replace(',', '.')
+                        );
+
+                    BreakoutManager.tradeSocketManager.Send(breakout.AccountPairClient.Client, request);
+                }
+                else
+                {
+                    foreach (Transaction transaction in transactions)
+                    {
+                        transactionManager.CloseTransaction(transaction);
+                    }
+                }
+            }
+        }
+
+        public static void HedgeIn(TcpClient client, dynamic json_data)
+        {
+            int breakoutId = (int)json_data.breakout_id;
+            int step = (int)json_data.step;
+
+            Breakout? breakout = Get(breakoutId);
+            if (breakout == null)
+            {
+                string debug = String.Format("BreakoutManager (HedgeIn) --> The breakout is not found! BreakoutId: {0}",
+                        breakoutId.ToString()
+                    );
+                Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
+            }
+            else
+            {
+                List<Transaction> transactions = breakout.Transactions.FindAll(_transaction => _transaction.Step == step && _transaction.Orders.All(_order => _order.Process != OrderProcess.CLOSED && _order.Process != OrderProcess.SEND_CLOSE));
+                foreach(Transaction transaction in transactions)
+                {
+                    List<Order> reverseOrders = new();
+
+                    foreach (Order order in transaction.Orders)
+                    {
+                        Order reverseOrder = BreakoutManager.orderManager.OrderCreate(
+                            order.AccountPairClient,
+                            order.Type == OrderType.BUY ? OrderType.SELL : OrderType.BUY,
+                            OrderBreakoutType.HEDGE_IN,
+                            order.Volume
+                            );
+
+                        reverseOrders.Add(reverseOrder);
+                    }
+
+                    Transaction reverseTransaction = transactionManager.CreateTransaction(
+                        breakout,
+                        reverseOrders,
+                        step
+                        );
+
+                    breakout.Transactions.Add(reverseTransaction);
+                }
             }
         }
     }

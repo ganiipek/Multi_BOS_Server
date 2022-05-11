@@ -68,8 +68,15 @@ namespace Multi_BOS_Server.Trade
                         // [todo] BOS'a tüm orderlar kapandı diye bilgi gönder. En son ki profit bilgisini de gönder.
                         // [todo] BOS'a tamam bilgisi dönerse eğer transactions'tan kaldır. Dönmezse kaldırma.
                         // [todo] transactions.Remove(transaction);
+                        transaction.ClosedInfo = true;
+
+                        string debug = String.Format("TransactionManager (Controller) --> The transaction was successfully closed. Transaction Id: {0}",
+                                    transaction.Id.ToString()
+                                    );
+                        Utils.SendLog(LoggerService.LoggerType.DEBUG, debug);
+                        transactions.Remove(transaction);
                     }
-                    else if(transaction.Orders.Count == transaction.RequiredOrderCount && !transaction.Orders.All(_order => _order.Process == OrderProcess.IN_PROCESS))
+                    else if(transaction.Orders.Count == transaction.RequiredOrderCount && transaction.Orders.All(_order => _order.Process == OrderProcess.IN_PROCESS))
                     {
                         double sumProfit = transaction.Orders.Sum(_order => _order.Profit + _order.Commission + _order.Swap);
 
@@ -78,18 +85,17 @@ namespace Multi_BOS_Server.Trade
                             AccountPairClient? accountPairClient = BreakoutManager.orderSocketManager.GetAccountPairClient(breakout.AccountPairClient.Account, breakout.AccountPairClient.Pair, breakout.MagicNumber);
                             if (accountPairClient == null)
                             {
-                                string debug = String.Format("TransactionManager (Controller) --> AccountPairClient not found. Transaction Id: {0}",
+                                string debug = String.Format("TransactionManager (Controller) --> The AccountPairClient not found. Transaction Id: {0}",
                                     transaction.Id.ToString()
                                     );
                                 Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
 
                                 continue;
                             }
-
                             transaction.LastSumProfit = sumProfit;
 
-                            sumProfit += breakout.HistoricalTransactionProfit;
-
+                            sumProfit = breakout.Transactions.SelectMany(_transaction => _transaction.Orders).Sum(_order => _order.Profit + _order.Swap + _order.Commission);
+                            
                             string request = String.Format("\"router\":\"{0}\",\"breakout_id\":\"{1}\",\"profit\":\"{2}\"",
                                 "multi_orders_profit",
                                 breakout.Id.ToString(),
@@ -207,7 +213,7 @@ namespace Multi_BOS_Server.Trade
             return volumes;
         }
 
-        public void SendOrders(Transaction transaction, Dictionary<AccountGroup, double> accountGroupVolumes)
+        void SendOrders(Transaction transaction, Dictionary<AccountGroup, double> accountGroupVolumes)
         {
             foreach(AccountGroup accountGroup in accountGroupVolumes.Keys)
             {
@@ -236,6 +242,18 @@ namespace Multi_BOS_Server.Trade
             }
         }
 
+        void SendOrders(Transaction transaction, List<Order> orders)
+        {
+            foreach(Order order in orders)
+            {
+                transaction.Orders.Add(order);
+
+                BreakoutManager.orderManager.SocketSend_OrderSend(order);
+
+                Thread.Sleep(10);
+            }
+        }
+
         Transaction CreateTransaction(Breakout breakout, OrderType orderType, OrderBreakoutType orderBreakoutType, double volume, int step)
         {
             Transaction transaction = new()
@@ -247,13 +265,31 @@ namespace Multi_BOS_Server.Trade
                 Step = step
             };
             BreakoutManager.databaseManager.AddTransaction(transaction);
-            Console.WriteLine(transaction.ToString());
 
             AddTransaction(transaction);
 
             Dictionary<AccountGroup, double> accountGroupVolumes = Allocate(breakout.AccountGroups, volume);
             transaction.RequiredOrderCount = accountGroupVolumes.Count;
             SendOrders(transaction, accountGroupVolumes);
+
+            return transaction;
+        }
+
+        public Transaction CreateTransaction(Breakout breakout, List<Order> orders, int step)
+        {
+            Transaction transaction = new()
+            {
+                BreakoutId = breakout.Id,
+                OrderType = orders.First().Type,
+                OrderBreakoutType = orders.First().BreakoutType,
+                Volume = orders.Sum(_order => _order.Volume),
+                Step = step
+            };
+            BreakoutManager.databaseManager.AddTransaction(transaction);
+
+            AddTransaction(transaction);
+
+            SendOrders(transaction, orders);
 
             return transaction;
         }
@@ -313,7 +349,8 @@ namespace Multi_BOS_Server.Trade
                 }
                 else
                 {
-                    CreateTransaction(breakout, orderType, orderBreakoutType, multiVolume, step);
+                    Transaction transaction2 = CreateTransaction(breakout, orderType, orderBreakoutType, multiVolume, step);
+                    breakout.Transactions.Add(transaction2);
                 }
             }
         }
@@ -363,6 +400,68 @@ namespace Multi_BOS_Server.Trade
                 else
                 {
                     CloseTransaction(transaction);
+                }
+            }
+        }
+
+        public void CloseHedge(TcpClient client, dynamic json_data)
+        {
+            int breakout_id = (int)json_data.breakout_id;
+            int step = (int)json_data.step;
+
+            Breakout? breakout = BreakoutManager.Get(breakout_id);
+            if (breakout == null)
+            {
+                string debug = String.Format("TransactionManager (CloseTransaction) --> Breakout is not found. Breakout Id: {0}",
+                            breakout_id.ToString()
+                            );
+                Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
+            }
+            else
+            {
+                Transaction? transaction = GetTransaction(breakout_id, OrderBreakoutType.STEP, step);
+                if (transaction == null)
+                {
+                    string debug = String.Format("TransactionManager (CloseTransaction) --> Transaction is not found. Breakout Id: {0}, Step: {1},Order Breakout Type: {2}",
+                            breakout_id.ToString(),
+                            step.ToString(),
+                            OrderBreakoutType.STEP.ToString()
+                            );
+                    Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
+                }
+                else
+                {
+                    CloseTransaction(transaction);
+                }
+
+                Transaction? transaction2 = GetTransaction(breakout_id, OrderBreakoutType.HEDGE_IN, step);
+                if (transaction2 == null)
+                {
+                    string debug = String.Format("TransactionManager (CloseTransaction) --> Transaction is not found. Breakout Id: {0}, Step: {1},Order Breakout Type: {2}",
+                            breakout_id.ToString(),
+                            step.ToString(),
+                            OrderBreakoutType.HEDGE_IN.ToString()
+                            );
+                    Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
+                }
+                else
+                {
+                    CloseTransaction(transaction2);
+                }
+
+                Transaction? transaction3 = GetTransaction(breakout_id, OrderBreakoutType.HEDGE_OUT, step);
+                if (transaction3 == null)
+                {
+                    string debug = String.Format("TransactionManager (CloseTransaction) --> Transaction is not found. Breakout Id: {0}, Step: {1},Order Breakout Type: {2}",
+                            breakout_id.ToString(),
+                            step.ToString(),
+                            OrderBreakoutType.HEDGE_IN.ToString()
+                            );
+                    Utils.SendLog(LoggerService.LoggerType.WARNING, debug);
+                }
+                else
+                {
+                    transaction3.OrderBreakoutType = OrderBreakoutType.STEP;
                 }
             }
         }

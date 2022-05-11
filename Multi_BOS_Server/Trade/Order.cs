@@ -39,7 +39,8 @@ namespace Multi_BOS_Server.Trade
     public enum OrderError
     {
         NOT_ERROR = 0,
-        ORDER_NOT_FOUND = 1
+        ORDER_NOT_FOUND = 1,
+        ORDER_NOT_CLOSED = 2
     }
 
 

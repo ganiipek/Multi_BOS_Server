@@ -109,17 +109,18 @@ namespace Multi_BOS_Server.Trade
                             Utils.SendLog(LoggerService.LoggerType.WARNING, debug2);
 
                             SocketSend_OrderClose(order);
+                            order.Error = OrderError.NOT_ERROR;
                         }
-                        else if((DateTime.Now - order.LastControl).TotalSeconds >= 2)
+                        else if((DateTime.Now - order.LastControl).TotalSeconds >= 1)
                         {
                             order.LastControl = DateTime.Now;
 
-                            string debug2 = String.Format("OrderManager (Controller) --> The order has not been heard from for more than 2 seconds. Close again. ({0})",
+                            string debug2 = String.Format("OrderManager (Controller) --> The order has not been heard from for more than 1 seconds. Close again. ({0})",
                                 order.ToSummary()
                             );
                             Utils.SendLog(LoggerService.LoggerType.WARNING, debug2);
 
-                            SocketSend_OrderClose(order);
+                            SocketSend_OrderInfo(order);
                         }
                     }
                     else if (order.Process == OrderProcess.CLOSED)
@@ -310,13 +311,17 @@ namespace Multi_BOS_Server.Trade
 
         public void OrderClose(Order order)
         {
-            lock(orders)
+            lock (orders)
             {
-                if(!orders.Exists(_order => _order == order))
+                if (!orders.Exists(_order => _order == order))
                 {
                     orders.Add(order);
                 }
-                SocketSend_OrderClose(order);
+
+                if (order.Process != OrderProcess.SEND_CLOSE && order.Process != OrderProcess.CLOSED)
+                {
+                    SocketSend_OrderClose(order);
+                }
             }
         }
 
@@ -439,6 +444,8 @@ namespace Multi_BOS_Server.Trade
         public void SocketReceive_OrderInfoByTicket(TcpClient client, dynamic json_data)
         {
             int orderId = (int)json_data.order_id;
+            int orderTicket = (int)json_data.ticket;
+
             Order? order = GetOrder(orderId);
 
             if (order == null)
@@ -461,6 +468,10 @@ namespace Multi_BOS_Server.Trade
                 }
                 else
                 {
+                    if(order.Ticket == -1)
+                    {
+                        order.Ticket = orderTicket;
+                    }
                     order.Type = (OrderType)((int)json_data.order_type);
                     order.OpenTime = Utils.UnixTimeStampToDateTime((ulong)json_data.open_time);
                     order.OpenPrice = (decimal)json_data.open_price;
@@ -479,7 +490,14 @@ namespace Multi_BOS_Server.Trade
                     }
                     else
                     {
-                        order.Process = OrderProcess.IN_PROCESS;
+                        if(order.Process == OrderProcess.SEND_CLOSE)
+                        {
+                            order.Error = OrderError.ORDER_NOT_CLOSED;
+                        }
+                        else
+                        {
+                            order.Process = OrderProcess.IN_PROCESS;
+                        }
                     }
                     
 

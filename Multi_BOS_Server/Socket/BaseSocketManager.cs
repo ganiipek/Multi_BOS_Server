@@ -379,6 +379,18 @@ namespace Multi_BOS_Server.Socket
                 {
                     BreakoutManager.transactionManager.CloseTransaction(client, json_data);
                 }
+                else if (json_data.type == "close_hedge_transaction")
+                {
+                    BreakoutManager.transactionManager.CloseHedge(client, json_data);
+                }
+                else if (json_data.type == "close_breakout")
+                {
+                    BreakoutManager.Close(client, json_data);
+                }
+                else if (json_data.type == "breakout_hedge_in")
+                {
+                    BreakoutManager.HedgeIn(client, json_data);
+                }
 
                 #region Price Socket
                 else if (json_data.type == "update_tick")
